@@ -122,8 +122,10 @@ const pageCache = new Map();
 export async function fetchPageContentCached(url) {
   if (pageCache.has(url)) return pageCache.get(url);
   const content = await fetchPageContent(url);
-  if (pageCache.size > 500) pageCache.clear();
-  pageCache.set(url, content);
+  if (content) {
+    if (pageCache.size > 500) pageCache.clear();
+    pageCache.set(url, content);
+  }
   return content;
 }
 

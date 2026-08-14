@@ -12,9 +12,26 @@ import {
   detectAI,
 } from "./plagiarism.js";
 
+const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const name = file.originalname.toLowerCase();
+    const ok = ALLOWED_EXTENSIONS.some((ext) =>
+      name.endsWith(ext)
+    );
+    if (ok) {
+      cb(null, true);
+    } else {
+      cb(
+        new Error(
+          "Unsupported file type. Use PDF, DOCX or TXT."
+        )
+      );
+    }
+  },
 });
 
 async function analyzeSentence(sentence) {
@@ -85,6 +102,13 @@ export function registerRoutes(app) {
       const limit = Math.min(sentences.length, 20);
       const toCheck = sentences.slice(0, limit);
 
+      if (toCheck.length === 0) {
+        return res.status(400).json({
+          error:
+            "No analyzable sentences found. Please provide longer sentences.",
+        });
+      }
+
       const results = await mapWithConcurrency(
         toCheck,
         4,
@@ -120,18 +144,38 @@ export function registerRoutes(app) {
       res.json(checkResult);
     } catch (error) {
       console.error("Error in plagiarism check:", error);
+      if (error?.name === "ZodError") {
+        return res.status(400).json({
+          error:
+            error.errors?.[0]?.message ||
+            "Invalid request",
+        });
+      }
       res.status(500).json({
-        error:
-          error instanceof Error
-            ? error.message
-            : "An unknown error occurred",
+        error: "Failed to check plagiarism",
       });
     }
   });
 
+  const handleUpload = (req, res, next) => {
+    upload.single("file")(req, res, (err) => {
+      if (err) {
+        const message =
+          err.code === "LIMIT_FILE_SIZE"
+            ? "File too large. Maximum size is 15 MB."
+            : err.message ||
+              "File upload failed";
+        return res
+          .status(400)
+          .json({ error: message });
+      }
+      next();
+    });
+  };
+
   app.post(
     "/api/extract-text",
-    upload.single("file"),
+    handleUpload,
     async (req, res) => {
       try {
         if (!req.file) {
@@ -152,9 +196,12 @@ export function registerRoutes(app) {
           const parser = new PDFParse({
             data: new Uint8Array(buffer),
           });
-          const result = await parser.getText();
-          text = result.text || "";
-          await parser.destroy();
+          try {
+            const result = await parser.getText();
+            text = result.text || "";
+          } finally {
+            await parser.destroy();
+          }
         } else if (name.endsWith(".docx")) {
           const result = await mammoth.extractRawText({
             buffer,
@@ -182,10 +229,7 @@ export function registerRoutes(app) {
       } catch (error) {
         console.error("Error extracting text:", error);
         res.status(500).json({
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to extract text from file",
+          error: "Failed to extract text from file",
         });
       }
     }
