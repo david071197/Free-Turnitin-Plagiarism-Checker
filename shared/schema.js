@@ -19,6 +19,7 @@ export const paraphraseSchema = z.object({
     .min(20, "El fragmento es demasiado corto")
     .max(1500, "El fragmento es demasiado largo"),
   reason: z.enum(["plagio", "ia"]).default("plagio"),
+  source: z.string().url().optional(),
 });
 
 export const sentenceResultSchema = z.object({

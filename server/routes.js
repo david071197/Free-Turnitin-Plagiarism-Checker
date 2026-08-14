@@ -7,10 +7,7 @@ import {
   paraphraseSchema,
   DEPTH_LIMITS,
 } from "../shared/schema.js";
-import {
-  paraphrase,
-  isParaphraseEnabled,
-} from "./paraphrase.js";
+import { paraphrase } from "./paraphrase.js";
 import {
   calculateSimilarity,
   searchWeb,
@@ -26,7 +23,7 @@ import {
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
 
 // The API routes are unauthenticated and expensive
-// (in-memory parsing, outbound fetches, LLM calls),
+// (in-memory parsing, many outbound fetches),
 // so a simple per-IP fixed window limits abuse.
 const RATE_WINDOW_MS = 60 * 1000;
 
@@ -69,9 +66,9 @@ function createRateLimit(maxRequests) {
 }
 
 const rateLimit = createRateLimit(10);
-// Paraphrasing is a single short LLM call, so it gets
-// a wider window than the scan endpoints.
-const paraphraseRateLimit = createRateLimit(30);
+// Paraphrasing is local and cheap, so it gets a wider
+// window than the scan endpoints.
+const paraphraseRateLimit = createRateLimit(60);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -334,36 +331,15 @@ export function registerRoutes(app) {
     }
   );
 
-  app.get("/api/features", (req, res) => {
-    res.json({ paraphrase: isParaphraseEnabled() });
-  });
-
   app.post(
     "/api/paraphrase",
     paraphraseRateLimit,
-    async (req, res) => {
+    (req, res) => {
       try {
-        if (!isParaphraseEnabled()) {
-          return res.status(503).json({
-            error:
-              "Paraphrasing is not configured. Set " +
-              "OPENAI_API_KEY on the server.",
-          });
-        }
-
-        const { text, reason } =
+        const { text, reason, source } =
           paraphraseSchema.parse(req.body);
-        const result = await paraphrase(text, reason);
 
-        if (result.options.length === 0) {
-          return res.status(502).json({
-            error:
-              "The model returned no suggestions. " +
-              "Please try again.",
-          });
-        }
-
-        res.json(result);
+        res.json(paraphrase(text, reason, source));
       } catch (error) {
         console.error("Error paraphrasing:", error);
         if (error?.name === "ZodError") {
@@ -373,7 +349,7 @@ export function registerRoutes(app) {
               "Invalid request",
           });
         }
-        res.status(502).json({
+        res.status(500).json({
           error: "Failed to generate suggestions",
         });
       }

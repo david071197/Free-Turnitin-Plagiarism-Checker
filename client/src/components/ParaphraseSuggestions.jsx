@@ -5,12 +5,12 @@ import { Loader2, Wand2 } from "lucide-react";
 const ParaphraseSuggestions = ({
   fragment,
   reason,
+  source,
   testId,
   onReplace,
 }) => {
   const [isLoading, setIsLoading] = useState(false);
-  const [options, setOptions] = useState([]);
-  const [tip, setTip] = useState("");
+  const [data, setData] = useState(null);
   const [error, setError] = useState("");
 
   const handleClick = async () => {
@@ -27,17 +27,17 @@ const ParaphraseSuggestions = ({
           body: JSON.stringify({
             text: fragment,
             reason,
+            source,
           }),
         }
       );
-      const data = await response.json();
+      const body = await response.json();
       if (!response.ok) {
         throw new Error(
-          data.error || "No se pudo parafrasear"
+          body.error || "No se pudo generar sugerencias"
         );
       }
-      setOptions(data.options);
-      setTip(data.tip || "");
+      setData(body);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -60,9 +60,7 @@ const ParaphraseSuggestions = ({
         ) : (
           <Wand2 className="mr-2 h-4 w-4" />
         )}
-        {options.length > 0
-          ? "Otras sugerencias"
-          : "Sugerir reescritura"}
+        Cómo reescribir esto
       </Button>
 
       {error && (
@@ -74,9 +72,9 @@ const ParaphraseSuggestions = ({
         </p>
       )}
 
-      {options.length > 0 && (
+      {data && (
         <div className="mt-3 space-y-2">
-          {options.map((option, idx) => (
+          {data.options.map((option, idx) => (
             <div
               key={idx}
               className="p-3 rounded-md bg-background/70 border"
@@ -84,7 +82,12 @@ const ParaphraseSuggestions = ({
                 `paraphrase-option-${testId}-${idx}`
               }
             >
-              <p className="text-sm">{option}</p>
+              <p className="text-xs font-medium mb-1">
+                {option.label}
+              </p>
+              <p className="text-sm whitespace-pre-line">
+                {option.text}
+              </p>
               <Button
                 type="button"
                 size="sm"
@@ -94,15 +97,24 @@ const ParaphraseSuggestions = ({
                   `button-use-paraphrase-` +
                   `${testId}-${idx}`
                 }
-                onClick={() => onReplace(option)}
+                onClick={() => onReplace(option.text)}
               >
                 Reemplazar en mi texto
               </Button>
             </div>
           ))}
-          {tip && (
+
+          {data.guide?.length > 0 && (
+            <ul className="text-xs list-disc pl-5 space-y-1 text-muted-foreground">
+              {data.guide.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+
+          {data.tip && (
             <p className="text-xs text-muted-foreground">
-              {tip}
+              {data.tip}
             </p>
           )}
         </div>

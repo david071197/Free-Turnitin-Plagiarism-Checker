@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -53,8 +53,6 @@ const Index = () => {
   const [text, setText] = useState("");
   const [depth, setDepth] = useState("normal");
   const [filter, setFilter] = useState("all");
-  const [canParaphrase, setCanParaphrase] =
-    useState(false);
   const [isChecking, setIsChecking] = useState(false);
   const [result, setResult] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -63,13 +61,6 @@ const Index = () => {
   const {
     toast
   } = useToast();
-  useEffect(() => {
-    fetch("/api/features")
-      .then((r) => r.json())
-      .then((d) => setCanParaphrase(!!d.paraphrase))
-      .catch(() => setCanParaphrase(false));
-  }, []);
-
   const replaceFragment = (fragment, rewrite) => {
     setText((current) =>
       current.replace(fragment, rewrite)
@@ -498,12 +489,14 @@ const Index = () => {
                             {item.aiIndicators.join(" · ")}
                           </p>
                         )}
-                        {canParaphrase &&
-                          (item.isPlagiarized ||
-                            item.isAiGenerated) && (
+                        {(item.isPlagiarized ||
+                          item.isAiGenerated) && (
                             <ParaphraseSuggestions
                               fragment={item.sentence}
                               testId={index}
+                              source={
+                                item.sources[0]?.url
+                              }
                               reason={
                                 item.isPlagiarized
                                   ? "plagio"
