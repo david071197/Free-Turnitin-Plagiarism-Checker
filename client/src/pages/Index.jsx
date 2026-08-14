@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { checkTextSchema } from "../../../shared/schema";
+import ParaphraseSuggestions from "@/components/ParaphraseSuggestions";
 
 const DEPTH_OPTIONS = [
   {
@@ -52,6 +53,8 @@ const Index = () => {
   const [text, setText] = useState("");
   const [depth, setDepth] = useState("normal");
   const [filter, setFilter] = useState("all");
+  const [canParaphrase, setCanParaphrase] =
+    useState(false);
   const [isChecking, setIsChecking] = useState(false);
   const [result, setResult] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -60,6 +63,25 @@ const Index = () => {
   const {
     toast
   } = useToast();
+  useEffect(() => {
+    fetch("/api/features")
+      .then((r) => r.json())
+      .then((d) => setCanParaphrase(!!d.paraphrase))
+      .catch(() => setCanParaphrase(false));
+  }, []);
+
+  const replaceFragment = (fragment, rewrite) => {
+    setText((current) =>
+      current.replace(fragment, rewrite)
+    );
+    toast({
+      title: "Texto actualizado",
+      description:
+        "Vuelve a analizar para ver el nuevo " +
+        "porcentaje.",
+    });
+  };
+
   const handleCheck = async () => {
     if (!text.trim()) {
       toast({
@@ -476,6 +498,25 @@ const Index = () => {
                             {item.aiIndicators.join(" · ")}
                           </p>
                         )}
+                        {canParaphrase &&
+                          (item.isPlagiarized ||
+                            item.isAiGenerated) && (
+                            <ParaphraseSuggestions
+                              fragment={item.sentence}
+                              testId={index}
+                              reason={
+                                item.isPlagiarized
+                                  ? "plagio"
+                                  : "ia"
+                              }
+                              onReplace={(rewrite) =>
+                                replaceFragment(
+                                  item.sentence,
+                                  rewrite
+                                )
+                              }
+                            />
+                          )}
                         {item.sources.length > 0 && <div className="mt-2 pt-2 border-t border-current/20">
                             <p className="text-xs font-semibold mb-1">Fuentes posibles:</p>
                             <div className="space-y-1">
