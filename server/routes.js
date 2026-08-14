@@ -4,8 +4,10 @@ import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import {
   checkTextSchema,
+  paraphraseSchema,
   DEPTH_LIMITS,
 } from "../shared/schema.js";
+import { paraphrase } from "./paraphrase.js";
 import {
   calculateSimilarity,
   searchWeb,
@@ -20,46 +22,53 @@ import {
 
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
 
-// Both API routes are unauthenticated and expensive
-// (in-memory parsing, many outbound fetches), so a
-// simple per-IP fixed window limits abuse.
+// The API routes are unauthenticated and expensive
+// (in-memory parsing, many outbound fetches),
+// so a simple per-IP fixed window limits abuse.
 const RATE_WINDOW_MS = 60 * 1000;
-const RATE_MAX_REQUESTS = 10;
-const hits = new Map();
 
-function rateLimit(req, res, next) {
-  const now = Date.now();
-  const key = req.ip || "unknown";
-  const entry = hits.get(key);
+function createRateLimit(maxRequests) {
+  const hits = new Map();
 
-  if (!entry || now > entry.resetAt) {
-    hits.set(key, {
-      count: 1,
-      resetAt: now + RATE_WINDOW_MS,
-    });
-    if (hits.size > 10000) {
-      for (const [k, v] of hits) {
-        if (now > v.resetAt) hits.delete(k);
+  return function rateLimit(req, res, next) {
+    const now = Date.now();
+    const key = req.ip || "unknown";
+    const entry = hits.get(key);
+
+    if (!entry || now > entry.resetAt) {
+      hits.set(key, {
+        count: 1,
+        resetAt: now + RATE_WINDOW_MS,
+      });
+      if (hits.size > 10000) {
+        for (const [k, v] of hits) {
+          if (now > v.resetAt) hits.delete(k);
+        }
       }
+      return next();
     }
+
+    entry.count += 1;
+    if (entry.count > maxRequests) {
+      const retryAfter = Math.ceil(
+        (entry.resetAt - now) / 1000
+      );
+      res.set("Retry-After", String(retryAfter));
+      return res.status(429).json({
+        error:
+          "Too many requests. Please wait a moment " +
+          "and try again.",
+      });
+    }
+
     return next();
-  }
-
-  entry.count += 1;
-  if (entry.count > RATE_MAX_REQUESTS) {
-    const retryAfter = Math.ceil(
-      (entry.resetAt - now) / 1000
-    );
-    res.set("Retry-After", String(retryAfter));
-    return res.status(429).json({
-      error:
-        "Too many requests. Please wait a moment " +
-        "and try again.",
-    });
-  }
-
-  return next();
+  };
 }
+
+const rateLimit = createRateLimit(10);
+// Paraphrasing is local and cheap, so it gets a wider
+// window than the scan endpoints.
+const paraphraseRateLimit = createRateLimit(60);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -317,6 +326,31 @@ export function registerRoutes(app) {
         console.error("Error extracting text:", error);
         res.status(500).json({
           error: "Failed to extract text from file",
+        });
+      }
+    }
+  );
+
+  app.post(
+    "/api/paraphrase",
+    paraphraseRateLimit,
+    (req, res) => {
+      try {
+        const { text, reason, source } =
+          paraphraseSchema.parse(req.body);
+
+        res.json(paraphrase(text, reason, source));
+      } catch (error) {
+        console.error("Error paraphrasing:", error);
+        if (error?.name === "ZodError") {
+          return res.status(400).json({
+            error:
+              error.errors?.[0]?.message ||
+              "Invalid request",
+          });
+        }
+        res.status(500).json({
+          error: "Failed to generate suggestions",
         });
       }
     }
