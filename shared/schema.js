@@ -13,6 +13,15 @@ export const checkTextSchema = z.object({
     .default("normal"),
 });
 
+export const paraphraseSchema = z.object({
+  text: z
+    .string()
+    .min(20, "El fragmento es demasiado corto")
+    .max(1500, "El fragmento es demasiado largo"),
+  reason: z.enum(["plagio", "ia"]).default("plagio"),
+  source: z.string().url().optional(),
+});
+
 export const sentenceResultSchema = z.object({
   sentence: z.string(),
   similarity: z.number(),
@@ -23,6 +32,9 @@ export const sentenceResultSchema = z.object({
     })
   ),
   isPlagiarized: z.boolean(),
+  aiScore: z.number(),
+  aiIndicators: z.array(z.string()),
+  isAiGenerated: z.boolean(),
 });
 
 export const coverageSchema = z.object({
@@ -41,5 +53,7 @@ export const checkResultSchema = z.object({
   plagiarizedSentences: z.number(),
   aiScore: z.number(),
   aiIndicators: z.array(z.string()),
+  aiSentences: z.number(),
+  aiSentencePercentage: z.number(),
   results: z.array(sentenceResultSchema),
 });

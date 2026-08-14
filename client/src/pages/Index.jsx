@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { checkTextSchema } from "../../../shared/schema";
+import ParaphraseSuggestions from "@/components/ParaphraseSuggestions";
 
 const DEPTH_OPTIONS = [
   {
@@ -32,9 +33,26 @@ const DEPTH_OPTIONS = [
   },
 ];
 
+const FILTERS = [
+  { value: "all", label: "Todo" },
+  { value: "plagio", label: "Solo plagio" },
+  { value: "ia", label: "Solo IA" },
+  { value: "clean", label: "Limpio" },
+];
+
+const matchesFilter = (item, filter) => {
+  if (filter === "plagio") return item.isPlagiarized;
+  if (filter === "ia") return item.isAiGenerated;
+  if (filter === "clean") {
+    return !item.isPlagiarized && !item.isAiGenerated;
+  }
+  return true;
+};
+
 const Index = () => {
   const [text, setText] = useState("");
   const [depth, setDepth] = useState("normal");
+  const [filter, setFilter] = useState("all");
   const [isChecking, setIsChecking] = useState(false);
   const [result, setResult] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -43,6 +61,18 @@ const Index = () => {
   const {
     toast
   } = useToast();
+  const replaceFragment = (fragment, rewrite) => {
+    setText((current) =>
+      current.replace(fragment, rewrite)
+    );
+    toast({
+      title: "Texto actualizado",
+      description:
+        "Vuelve a analizar para ver el nuevo " +
+        "porcentaje.",
+    });
+  };
+
   const handleCheck = async () => {
     if (!text.trim()) {
       toast({
@@ -87,6 +117,7 @@ const Index = () => {
         );
       }
       setResult(data);
+      setFilter("all");
       toast({
         title: "Check Complete",
         description: `Plagiarism score: ${data.plagiarismPercentage}%`
@@ -275,34 +306,45 @@ const Index = () => {
           </Card>
 
           {result && <div className="mt-8 space-y-6">
-              <Card className="shadow-xl border-2" data-testid="card-report">
+              <Card className="shadow-xl border-2 border-red-200 dark:border-red-900" data-testid="card-report">
                 <CardHeader>
-                  <CardTitle>Plagiarism Report</CardTitle>
+                  <CardTitle className="flex items-center gap-2">
+                    <FileSearch className="h-5 w-5 text-red-600" />
+                    Plagio (copiado de la web)
+                  </CardTitle>
+                  <CardDescription>
+                    Fragmentos que coinciden con páginas
+                    o artículos publicados.
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  <div className="grid md:grid-cols-3 gap-6">
+                  <div className="grid md:grid-cols-2 gap-6">
                     <div className="text-center p-6 bg-secondary rounded-md">
-                      <p className="text-sm text-muted-foreground mb-2">Overall Plagiarism</p>
+                      <p className="text-sm text-muted-foreground mb-2">
+                        Fragmentos con plagio
+                      </p>
                       <p className={`text-5xl font-bold ${getScoreColor(result.plagiarismPercentage)}`} data-testid="text-plagiarism-percentage">
                         {result.plagiarismPercentage}%
                       </p>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        {result.plagiarizedSentences} de{" "}
+                        {result.totalSentences} analizados
+                      </p>
                     </div>
                     <div className="text-center p-6 bg-secondary rounded-md">
-                      <p className="text-sm text-muted-foreground mb-2">Similarity Score</p>
+                      <p className="text-sm text-muted-foreground mb-2">
+                        Similitud promedio
+                      </p>
                       <p className={`text-5xl font-bold ${getScoreColor(result.overallScore)}`} data-testid="text-overall-score">
                         {result.overallScore}%
                       </p>
-                    </div>
-                    <div className="text-center p-6 bg-secondary rounded-md">
-                      <p className="text-sm text-muted-foreground mb-2 flex items-center justify-center gap-1">
-                        <Bot className="h-4 w-4" />
-                        AI Content
-                      </p>
-                      <p className={`text-5xl font-bold ${getScoreColor(result.aiScore ?? 0)}`} data-testid="text-ai-score">
-                        {result.aiScore ?? 0}%
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Parecido medio con las fuentes
                       </p>
                     </div>
                   </div>
+
+                  <Progress value={result.plagiarizedSentences / result.totalSentences * 100} className="h-2" />
 
                   {result.coverage && (
                     <Alert data-testid="alert-coverage">
@@ -333,48 +375,143 @@ const Index = () => {
                     </Alert>
                   )}
 
+                  <div className="flex justify-between text-sm">
+                    <span>Fragmentos analizados</span>
+                    <span className="font-semibold" data-testid="text-total-sentences">{result.totalSentences}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span>Fragmentos con plagio</span>
+                    <span className="font-semibold text-red-600 dark:text-red-400" data-testid="text-plagiarized-sentences">{result.plagiarizedSentences}</span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="shadow-xl border-2 border-purple-200 dark:border-purple-900" data-testid="card-ai-report">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Bot className="h-5 w-5 text-purple-600" />
+                    Contenido generado por IA
+                  </CardTitle>
+                  <CardDescription>
+                    Estimación heurística (uniformidad de
+                    oraciones, vocabulario y frases
+                    plantilla). No es una prueba: no
+                    busca coincidencias en la web.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="grid md:grid-cols-2 gap-6">
+                    <div className="text-center p-6 bg-purple-50 dark:bg-purple-950/20 rounded-md">
+                      <p className="text-sm text-muted-foreground mb-2">
+                        Probabilidad global de IA
+                      </p>
+                      <p className={`text-5xl font-bold ${getScoreColor(result.aiScore ?? 0)}`} data-testid="text-ai-score">
+                        {result.aiScore ?? 0}%
+                      </p>
+                    </div>
+                    <div className="text-center p-6 bg-purple-50 dark:bg-purple-950/20 rounded-md">
+                      <p className="text-sm text-muted-foreground mb-2">
+                        Fragmentos marcados como IA
+                      </p>
+                      <p className={`text-5xl font-bold ${getScoreColor(result.aiSentencePercentage ?? 0)}`} data-testid="text-ai-sentence-percentage">
+                        {result.aiSentencePercentage ?? 0}%
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        {result.aiSentences ?? 0} de{" "}
+                        {result.totalSentences} analizados
+                      </p>
+                    </div>
+                  </div>
+
                   {result.aiIndicators?.length > 0 && (
                     <Alert data-testid="alert-ai-indicators">
                       <Bot className="h-4 w-4" />
                       <AlertDescription>
                         <span className="font-semibold">
-                          AI indicators:
+                          Indicadores de IA:
                         </span>{" "}
                         {result.aiIndicators.join(" · ")}
                       </AlertDescription>
                     </Alert>
                   )}
-
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span>Sentences Analyzed</span>
-                      <span className="font-semibold" data-testid="text-total-sentences">{result.totalSentences}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span>Plagiarized Sentences</span>
-                      <span className="font-semibold text-red-600 dark:text-red-400" data-testid="text-plagiarized-sentences">{result.plagiarizedSentences}</span>
-                    </div>
-                    <Progress value={result.plagiarizedSentences / result.totalSentences * 100} className="h-2" />
-                  </div>
                 </CardContent>
               </Card>
 
               <Card className="shadow-xl border-2" data-testid="card-details">
                 <CardHeader>
-                  <CardTitle>Detailed Results</CardTitle>
-                  <CardDescription>Sentence-by-sentence analysis with sources</CardDescription>
+                  <CardTitle>Detalle por fragmento</CardTitle>
+                  <CardDescription>
+                    Cada fragmento lleva su etiqueta:
+                    rojo = plagio con fuentes, violeta =
+                    posible IA.
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
+                  <div className="flex gap-2 flex-wrap mb-4">
+                    {FILTERS.map((option) => (
+                      <Button
+                        key={option.value}
+                        type="button"
+                        size="sm"
+                        data-testid={
+                          `button-filter-${option.value}`
+                        }
+                        variant={
+                          filter === option.value
+                            ? "default"
+                            : "outline"
+                        }
+                        onClick={() =>
+                          setFilter(option.value)
+                        }
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
                   <div className="space-y-4">
-                    {result.results.map((item, index) => <div key={index} data-testid={`result-sentence-${index}`} className={`p-4 rounded-md border-2 ${item.isPlagiarized ? "bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900" : "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-900"}`}>
+                    {result.results.filter((item) => matchesFilter(item, filter)).map((item, index) => <div key={index} data-testid={`result-sentence-${index}`} className={`p-4 rounded-md border-2 ${item.isPlagiarized ? "bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900" : item.isAiGenerated ? "bg-purple-50 dark:bg-purple-950/20 border-purple-200 dark:border-purple-900" : "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-900"}`}>
                         <div className="flex items-start justify-between gap-4 mb-2 flex-wrap">
                           <p className="text-sm font-medium flex-1" data-testid={`text-sentence-${index}`}>{item.sentence}</p>
-                          <span data-testid={`badge-similarity-${index}`} className={`px-3 py-1 rounded-full text-sm font-bold ${item.isPlagiarized ? "bg-red-600 text-white" : "bg-green-600 text-white"}`}>
-                            {item.similarity}%
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span data-testid={`badge-similarity-${index}`} className={`px-3 py-1 rounded-full text-sm font-bold ${item.isPlagiarized ? "bg-red-600 text-white" : "bg-green-600 text-white"}`}>
+                              Plagio {item.similarity}%
+                            </span>
+                            {item.aiScore !== undefined && (
+                              <span data-testid={`badge-ai-${index}`} className={`px-3 py-1 rounded-full text-sm font-bold ${item.isAiGenerated ? "bg-purple-600 text-white" : "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"}`}>
+                                IA {item.aiScore}%
+                              </span>
+                            )}
+                          </div>
                         </div>
+                        {item.isAiGenerated && item.aiIndicators?.length > 0 && (
+                          <p className="text-xs text-purple-700 dark:text-purple-300 mb-2" data-testid={`text-ai-indicators-${index}`}>
+                            {item.aiIndicators.join(" · ")}
+                          </p>
+                        )}
+                        {(item.isPlagiarized ||
+                          item.isAiGenerated) && (
+                            <ParaphraseSuggestions
+                              fragment={item.sentence}
+                              testId={index}
+                              source={
+                                item.sources[0]?.url
+                              }
+                              reason={
+                                item.isPlagiarized
+                                  ? "plagio"
+                                  : "ia"
+                              }
+                              onReplace={(rewrite) =>
+                                replaceFragment(
+                                  item.sentence,
+                                  rewrite
+                                )
+                              }
+                            />
+                          )}
                         {item.sources.length > 0 && <div className="mt-2 pt-2 border-t border-current/20">
-                            <p className="text-xs font-semibold mb-1">Potential Sources:</p>
+                            <p className="text-xs font-semibold mb-1">Fuentes posibles:</p>
                             <div className="space-y-1">
                               {item.sources.map((source, idx) => <div key={idx} className="flex items-start gap-2">
                                   <a href={source.url} target="_blank" rel="noopener noreferrer" data-testid={`link-source-${index}-${idx}`} className={`flex-1 text-xs hover:underline truncate ${source.similarity >= 50 ? "text-red-600 dark:text-red-400 font-semibold" : "text-orange-600 dark:text-orange-400"}`}>

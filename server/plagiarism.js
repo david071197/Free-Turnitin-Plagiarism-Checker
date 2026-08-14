@@ -225,20 +225,39 @@ export function splitSentences(text) {
   return sentences;
 }
 
-// Picks `max` sentences spread evenly over the whole
+// Picks `max` positions spread evenly over the whole
 // document instead of just the first ones, so a long
 // thesis is represented from start to end.
-export function sampleSentences(sentences, max) {
-  if (sentences.length <= max) return sentences;
-
-  const step = sentences.length / max;
-  const sampled = [];
-
-  for (let i = 0; i < max; i++) {
-    sampled.push(sentences[Math.floor(i * step)]);
+export function sampleIndices(total, max) {
+  if (total <= max) {
+    return Array.from({ length: total }, (_, i) => i);
   }
 
-  return sampled;
+  const step = total / max;
+  const indices = [];
+
+  for (let i = 0; i < max; i++) {
+    indices.push(Math.floor(i * step));
+  }
+
+  return indices;
+}
+
+// detectAI() needs several sentences to measure
+// burstiness, so each sentence is scored together
+// with its neighbours. This is what lets the UI point
+// at *which* part of the text looks AI-written.
+export function detectAIByWindow(sentences, radius = 2) {
+  return sentences.map((_, i) => {
+    const window = sentences
+      .slice(
+        Math.max(0, i - radius),
+        i + radius + 1
+      )
+      .join(" ");
+
+    return detectAI(window);
+  });
 }
 
 export async function mapWithConcurrency(items, limit, fn) {
