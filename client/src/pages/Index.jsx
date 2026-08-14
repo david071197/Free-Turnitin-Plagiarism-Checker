@@ -1,10 +1,16 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, FileSearch, AlertCircle } from "lucide-react";
+import {
+  Loader2,
+  FileSearch,
+  AlertCircle,
+  Upload,
+  Bot,
+} from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { checkTextSchema } from "../../../shared/schema";
 
@@ -12,6 +18,9 @@ const Index = () => {
   const [text, setText] = useState("");
   const [isChecking, setIsChecking] = useState(false);
   const [result, setResult] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const fileInputRef = useRef(null);
   const {
     toast
   } = useToast();
@@ -69,6 +78,53 @@ const Index = () => {
       setIsChecking(false);
     }
   };
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setFileName("");
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(
+        "/api/extract-text",
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data.error || "Failed to extract text"
+        );
+      }
+      setText(data.text);
+      setFileName(data.filename);
+      setResult(null);
+      toast({
+        title: "File Loaded",
+        description:
+          `Extracted ${data.text.length} characters ` +
+          `from ${data.filename}`,
+      });
+    } catch (error) {
+      console.error("Error uploading file:", error);
+      toast({
+        title: "Upload Error",
+        description:
+          error.message ||
+          "Failed to extract text from file",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
   const getScoreColor = score => {
     if (score < 20) return "text-green-600 dark:text-green-400";
     if (score < 50) return "text-yellow-600 dark:text-yellow-400";
@@ -93,10 +149,47 @@ const Index = () => {
             <CardHeader>
               <CardTitle>Enter Your Text</CardTitle>
               <CardDescription>
-                Paste your text below to check for plagiarism against internet sources
+                Paste your text below or upload a PDF,
+                Word (.docx) or TXT file to check for
+                plagiarism and AI-generated content
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="flex items-center gap-3 flex-wrap">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.txt"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  data-testid="input-file"
+                />
+                <Button
+                  variant="outline"
+                  data-testid="button-upload-file"
+                  onClick={() =>
+                    fileInputRef.current?.click()
+                  }
+                  disabled={isUploading || isChecking}
+                >
+                  {isUploading ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Upload className="mr-2 h-4 w-4" />
+                  )}
+                  {isUploading
+                    ? "Extracting..."
+                    : "Upload PDF / Word / TXT"}
+                </Button>
+                {fileName && (
+                  <span
+                    className="text-sm text-muted-foreground"
+                    data-testid="text-file-name"
+                  >
+                    {fileName}
+                  </span>
+                )}
+              </div>
               <Textarea data-testid="input-text" placeholder="Paste your text here (minimum 100 characters)..." value={text} onChange={e => setText(e.target.value)} className="min-h-[200px] text-base" />
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <p className="text-sm text-muted-foreground" data-testid="text-character-count">
@@ -111,7 +204,7 @@ const Index = () => {
               {isChecking && <Alert data-testid="alert-checking">
                   <AlertCircle className="h-4 w-4" />
                   <AlertDescription>
-                    This may take 30-60 seconds as we search the web and compare your text...
+                    Analyzing your text against web sources in parallel, this usually takes a few seconds...
                   </AlertDescription>
                 </Alert>}
             </CardContent>
@@ -123,7 +216,7 @@ const Index = () => {
                   <CardTitle>Plagiarism Report</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  <div className="grid md:grid-cols-2 gap-6">
+                  <div className="grid md:grid-cols-3 gap-6">
                     <div className="text-center p-6 bg-secondary rounded-md">
                       <p className="text-sm text-muted-foreground mb-2">Overall Plagiarism</p>
                       <p className={`text-5xl font-bold ${getScoreColor(result.plagiarismPercentage)}`} data-testid="text-plagiarism-percentage">
@@ -136,7 +229,28 @@ const Index = () => {
                         {result.overallScore}%
                       </p>
                     </div>
+                    <div className="text-center p-6 bg-secondary rounded-md">
+                      <p className="text-sm text-muted-foreground mb-2 flex items-center justify-center gap-1">
+                        <Bot className="h-4 w-4" />
+                        AI Content
+                      </p>
+                      <p className={`text-5xl font-bold ${getScoreColor(result.aiScore ?? 0)}`} data-testid="text-ai-score">
+                        {result.aiScore ?? 0}%
+                      </p>
+                    </div>
                   </div>
+
+                  {result.aiIndicators?.length > 0 && (
+                    <Alert data-testid="alert-ai-indicators">
+                      <Bot className="h-4 w-4" />
+                      <AlertDescription>
+                        <span className="font-semibold">
+                          AI indicators:
+                        </span>{" "}
+                        {result.aiIndicators.join(" · ")}
+                      </AlertDescription>
+                    </Alert>
+                  )}
 
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">

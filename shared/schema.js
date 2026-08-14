@@ -21,5 +21,7 @@ export const checkResultSchema = z.object({
   plagiarismPercentage: z.number(),
   totalSentences: z.number(),
   plagiarizedSentences: z.number(),
+  aiScore: z.number(),
+  aiIndicators: z.array(z.string()),
   results: z.array(sentenceResultSchema),
 });
