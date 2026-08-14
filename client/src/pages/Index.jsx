@@ -14,8 +14,27 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { checkTextSchema } from "../../../shared/schema";
 
+const DEPTH_OPTIONS = [
+  {
+    value: "fast",
+    label: "Rápido",
+    hint: "hasta 20 oraciones",
+  },
+  {
+    value: "normal",
+    label: "Normal",
+    hint: "hasta 60 oraciones",
+  },
+  {
+    value: "deep",
+    label: "Profundo",
+    hint: "hasta 150 oraciones",
+  },
+];
+
 const Index = () => {
   const [text, setText] = useState("");
+  const [depth, setDepth] = useState("normal");
   const [isChecking, setIsChecking] = useState(false);
   const [result, setResult] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -55,7 +74,8 @@ const Index = () => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          text
+          text,
+          depth
         })
       });
       const data = await response.json();
@@ -196,6 +216,44 @@ const Index = () => {
                   </span>
                 )}
               </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium">
+                  Profundidad del análisis
+                </p>
+                <div className="flex gap-2 flex-wrap">
+                  {DEPTH_OPTIONS.map((option) => (
+                    <Button
+                      key={option.value}
+                      type="button"
+                      size="sm"
+                      data-testid={
+                        `button-depth-${option.value}`
+                      }
+                      variant={
+                        depth === option.value
+                          ? "default"
+                          : "outline"
+                      }
+                      disabled={isChecking}
+                      onClick={() =>
+                        setDepth(option.value)
+                      }
+                    >
+                      {option.label}
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Las oraciones se reparten por todo el
+                  documento, no solo al inicio (
+                  {
+                    DEPTH_OPTIONS.find(
+                      (o) => o.value === depth
+                    ).hint
+                  }
+                  ).
+                </p>
+              </div>
               <Textarea data-testid="input-text" placeholder="Paste your text here (minimum 100 characters)..." value={text} onChange={e => setText(e.target.value)} className="min-h-[200px] text-base" />
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <p className="text-sm text-muted-foreground" data-testid="text-character-count">
@@ -245,6 +303,35 @@ const Index = () => {
                       </p>
                     </div>
                   </div>
+
+                  {result.coverage && (
+                    <Alert data-testid="alert-coverage">
+                      <FileSearch className="h-4 w-4" />
+                      <AlertDescription>
+                        Analizadas{" "}
+                        {
+                          result.coverage
+                            .analyzedSentences
+                        }{" "}
+                        de{" "}
+                        {
+                          result.coverage
+                            .documentSentences
+                        }{" "}
+                        oraciones (
+                        {
+                          result.coverage
+                            .coveragePercentage
+                        }
+                        % del documento).{" "}
+                        {result.coverage.sampled
+                          ? "Muestreo repartido de " +
+                            "principio a fin; usa " +
+                            "Profundo para más cobertura."
+                          : "Documento completo."}
+                      </AlertDescription>
+                    </Alert>
+                  )}
 
                   {result.aiIndicators?.length > 0 && (
                     <Alert data-testid="alert-ai-indicators">

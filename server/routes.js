@@ -2,7 +2,10 @@ import { createServer } from "http";
 import multer from "multer";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
-import { checkTextSchema } from "../shared/schema.js";
+import {
+  checkTextSchema,
+  DEPTH_LIMITS,
+} from "../shared/schema.js";
 import {
   calculateSimilarity,
   searchWeb,
@@ -10,6 +13,8 @@ import {
   nGramSimilarity,
   mapWithConcurrency,
   detectAI,
+  splitSentences,
+  sampleSentences,
 } from "./plagiarism.js";
 
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
@@ -131,20 +136,20 @@ export function registerRoutes(app) {
     rateLimit,
     async (req, res) => {
       try {
-        const { text } = checkTextSchema.parse(req.body);
+        const { text, depth } =
+          checkTextSchema.parse(req.body);
 
-        console.log(
-          "Starting plagiarism check for text length:",
-          text.length
+        const sentences = splitSentences(text);
+        const toCheck = sampleSentences(
+          sentences,
+          DEPTH_LIMITS[depth]
         );
 
-        const sentences = text
-          .split(/[.!?]+/)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 20);
-
-        const limit = Math.min(sentences.length, 20);
-        const toCheck = sentences.slice(0, limit);
+        console.log(
+          `Plagiarism check: ${text.length} chars, ` +
+            `${toCheck.length}/${sentences.length} ` +
+            `sentences (depth ${depth})`
+        );
 
         if (toCheck.length === 0) {
           return res.status(400).json({
@@ -176,6 +181,16 @@ export function registerRoutes(app) {
         const aiAnalysis = detectAI(text);
 
         const checkResult = {
+          coverage: {
+            documentSentences: sentences.length,
+            analyzedSentences: results.length,
+            coveragePercentage: Math.round(
+              (results.length / sentences.length) * 100
+            ),
+            sampled:
+              results.length < sentences.length,
+            depth,
+          },
           overallScore,
           plagiarismPercentage,
           totalSentences: results.length,
