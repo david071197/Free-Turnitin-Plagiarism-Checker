@@ -23,6 +23,9 @@ export const sentenceResultSchema = z.object({
     })
   ),
   isPlagiarized: z.boolean(),
+  aiScore: z.number(),
+  aiIndicators: z.array(z.string()),
+  isAiGenerated: z.boolean(),
 });
 
 export const coverageSchema = z.object({
@@ -41,5 +44,7 @@ export const checkResultSchema = z.object({
   plagiarizedSentences: z.number(),
   aiScore: z.number(),
   aiIndicators: z.array(z.string()),
+  aiSentences: z.number(),
+  aiSentencePercentage: z.number(),
   results: z.array(sentenceResultSchema),
 });

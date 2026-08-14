@@ -14,7 +14,8 @@ import {
   mapWithConcurrency,
   detectAI,
   splitSentences,
-  sampleSentences,
+  sampleIndices,
+  detectAIByWindow,
 } from "./plagiarism.js";
 
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
@@ -140,9 +141,12 @@ export function registerRoutes(app) {
           checkTextSchema.parse(req.body);
 
         const sentences = splitSentences(text);
-        const toCheck = sampleSentences(
-          sentences,
+        const indices = sampleIndices(
+          sentences.length,
           DEPTH_LIMITS[depth]
+        );
+        const toCheck = indices.map(
+          (i) => sentences[i]
         );
 
         console.log(
@@ -158,10 +162,24 @@ export function registerRoutes(app) {
           });
         }
 
+        const aiByWindow = detectAIByWindow(sentences);
+
         const results = await mapWithConcurrency(
           toCheck,
           4,
-          (sentence) => analyzeSentence(sentence)
+          async (sentence, i) => {
+            const analysis = await analyzeSentence(
+              sentence
+            );
+            const ai = aiByWindow[indices[i]];
+
+            return {
+              ...analysis,
+              aiScore: ai.aiScore,
+              aiIndicators: ai.indicators,
+              isAiGenerated: ai.aiScore >= 60,
+            };
+          }
         );
 
         const totalSimilarity = results.reduce(
@@ -176,6 +194,12 @@ export function registerRoutes(app) {
         ).length;
         const plagiarismPercentage = Math.round(
           (plagiarizedCount / results.length) * 100
+        );
+        const aiCount = results.filter(
+          (r) => r.isAiGenerated
+        ).length;
+        const aiSentencePercentage = Math.round(
+          (aiCount / results.length) * 100
         );
 
         const aiAnalysis = detectAI(text);
@@ -197,6 +221,8 @@ export function registerRoutes(app) {
           plagiarizedSentences: plagiarizedCount,
           aiScore: aiAnalysis.aiScore,
           aiIndicators: aiAnalysis.indicators,
+          aiSentences: aiCount,
+          aiSentencePercentage,
           results,
         };
 
