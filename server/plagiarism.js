@@ -16,12 +16,29 @@ export function calculateSimilarity(text1, text2) {
   return dotProduct / (magnitude1 * magnitude2);
 }
 
+// Global throttle for DuckDuckGo HTML requests. The rest of the pipeline
+// (page fetches, CrossRef) stays parallel, but hits to DDG's HTML endpoint
+// are spaced out to avoid rate limiting / captchas that would silently
+// produce false "no plagiarism" results.
+const DDG_MIN_INTERVAL_MS = 750;
+let ddgQueue = Promise.resolve();
+
+function throttleDuckDuckGo() {
+  const ready = ddgQueue;
+  ddgQueue = ready.then(
+    () => new Promise((resolve) => setTimeout(resolve, DDG_MIN_INTERVAL_MS))
+  );
+  return ready;
+}
+
 export async function searchWeb(query) {
   const urls = [];
 
   try {
     const searchQuery = encodeURIComponent(query.slice(0, 200));
     const ddgUrl = `https://html.duckduckgo.com/html/?q=${searchQuery}`;
+
+    await throttleDuckDuckGo();
 
     const response = await fetch(ddgUrl, {
       headers: {
@@ -30,9 +47,21 @@ export async function searchWeb(query) {
       },
     });
 
+    if (!response.ok) {
+      console.warn(
+        `DuckDuckGo search blocked or failed (status ${response.status}) for query: ${query.slice(0, 80)}`
+      );
+    }
+
     const html = await response.text();
 
     const resultMatches = html.match(/uddg=([^"&]+)/g) || [];
+
+    if (response.ok && resultMatches.length === 0) {
+      console.warn(
+        `DuckDuckGo returned no parseable results (possible rate limit/captcha) for query: ${query.slice(0, 80)}`
+      );
+    }
     const ddgUrls = resultMatches
       .map((match) => {
         const encoded = match.replace("uddg=", "");
