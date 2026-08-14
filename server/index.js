@@ -3,8 +3,17 @@ import { registerRoutes } from "./routes.js";
 import { setupVite, serveStatic, log } from "./vite.js";
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+// Extracted text from uploaded PDFs/DOCX can be
+// far larger than the default 100 kb JSON limit.
+const BODY_LIMIT = "20mb";
+
+app.use(express.json({ limit: BODY_LIMIT }));
+app.use(
+  express.urlencoded({
+    extended: false,
+    limit: BODY_LIMIT,
+  })
+);
 
 app.use((req, res, next) => {
   const start = Date.now();

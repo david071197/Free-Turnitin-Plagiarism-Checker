@@ -58,10 +58,14 @@ const Index = () => {
           text
         })
       });
-      if (!response.ok) {
-        throw new Error('Failed to check plagiarism');
-      }
       const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
+            data.message ||
+            "Failed to check plagiarism"
+        );
+      }
       setResult(data);
       toast({
         title: "Check Complete",
@@ -71,7 +75,9 @@ const Index = () => {
       console.error('Error checking plagiarism:', error);
       toast({
         title: "Error",
-        description: "Failed to check plagiarism. Please try again.",
+        description:
+          error.message ||
+          "Failed to check plagiarism. Please try again.",
         variant: "destructive"
       });
     } finally {
