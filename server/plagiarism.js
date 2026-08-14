@@ -148,14 +148,29 @@ export async function fetchPageContent(url) {
 
 const pageCache = new Map();
 
-export async function fetchPageContentCached(url) {
-  if (pageCache.has(url)) return pageCache.get(url);
-  const content = await fetchPageContent(url);
-  if (content) {
-    if (pageCache.size > 500) pageCache.clear();
-    pageCache.set(url, content);
-  }
-  return content;
+// The cache stores in-flight promises so that
+// concurrent sentence analyses share a single
+// download per URL. Failed fetches are evicted so
+// transient errors are retried later.
+export function fetchPageContentCached(url) {
+  const cached = pageCache.get(url);
+  if (cached) return cached;
+
+  if (pageCache.size > 500) pageCache.clear();
+
+  const pending = fetchPageContent(url).then(
+    (content) => {
+      if (!content) pageCache.delete(url);
+      return content;
+    },
+    (error) => {
+      pageCache.delete(url);
+      throw error;
+    }
+  );
+
+  pageCache.set(url, pending);
+  return pending;
 }
 
 export async function mapWithConcurrency(items, limit, fn) {

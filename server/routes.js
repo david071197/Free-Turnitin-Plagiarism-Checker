@@ -14,6 +14,47 @@ import {
 
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
 
+// Both API routes are unauthenticated and expensive
+// (in-memory parsing, many outbound fetches), so a
+// simple per-IP fixed window limits abuse.
+const RATE_WINDOW_MS = 60 * 1000;
+const RATE_MAX_REQUESTS = 10;
+const hits = new Map();
+
+function rateLimit(req, res, next) {
+  const now = Date.now();
+  const key = req.ip || "unknown";
+  const entry = hits.get(key);
+
+  if (!entry || now > entry.resetAt) {
+    hits.set(key, {
+      count: 1,
+      resetAt: now + RATE_WINDOW_MS,
+    });
+    if (hits.size > 10000) {
+      for (const [k, v] of hits) {
+        if (now > v.resetAt) hits.delete(k);
+      }
+    }
+    return next();
+  }
+
+  entry.count += 1;
+  if (entry.count > RATE_MAX_REQUESTS) {
+    const retryAfter = Math.ceil(
+      (entry.resetAt - now) / 1000
+    );
+    res.set("Retry-After", String(retryAfter));
+    return res.status(429).json({
+      error:
+        "Too many requests. Please wait a moment " +
+        "and try again.",
+    });
+  }
+
+  return next();
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 },
@@ -85,77 +126,81 @@ async function analyzeSentence(sentence) {
 }
 
 export function registerRoutes(app) {
-  app.post("/api/plagiarism-check", async (req, res) => {
-    try {
-      const { text } = checkTextSchema.parse(req.body);
+  app.post(
+    "/api/plagiarism-check",
+    rateLimit,
+    async (req, res) => {
+      try {
+        const { text } = checkTextSchema.parse(req.body);
 
-      console.log(
-        "Starting plagiarism check for text length:",
-        text.length
-      );
+        console.log(
+          "Starting plagiarism check for text length:",
+          text.length
+        );
 
-      const sentences = text
-        .split(/[.!?]+/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 20);
+        const sentences = text
+          .split(/[.!?]+/)
+          .map((s) => s.trim())
+          .filter((s) => s.length > 20);
 
-      const limit = Math.min(sentences.length, 20);
-      const toCheck = sentences.slice(0, limit);
+        const limit = Math.min(sentences.length, 20);
+        const toCheck = sentences.slice(0, limit);
 
-      if (toCheck.length === 0) {
-        return res.status(400).json({
-          error:
-            "No analyzable sentences found. Please provide longer sentences.",
+        if (toCheck.length === 0) {
+          return res.status(400).json({
+            error:
+              "No analyzable sentences found. Please provide longer sentences.",
+          });
+        }
+
+        const results = await mapWithConcurrency(
+          toCheck,
+          4,
+          (sentence) => analyzeSentence(sentence)
+        );
+
+        const totalSimilarity = results.reduce(
+          (sum, r) => sum + r.similarity,
+          0
+        );
+        const overallScore = Math.round(
+          totalSimilarity / results.length
+        );
+        const plagiarizedCount = results.filter(
+          (r) => r.isPlagiarized
+        ).length;
+        const plagiarismPercentage = Math.round(
+          (plagiarizedCount / results.length) * 100
+        );
+
+        const aiAnalysis = detectAI(text);
+
+        const checkResult = {
+          overallScore,
+          plagiarismPercentage,
+          totalSentences: results.length,
+          plagiarizedSentences: plagiarizedCount,
+          aiScore: aiAnalysis.aiScore,
+          aiIndicators: aiAnalysis.indicators,
+          results,
+        };
+
+        res.json(checkResult);
+      } catch (error) {
+        console.error("Error in plagiarism check:", error);
+        if (error?.name === "ZodError") {
+          return res.status(400).json({
+            error:
+              error.errors?.[0]?.message ||
+              "Invalid request",
+          });
+        }
+        res.status(500).json({
+          error: "Failed to check plagiarism",
         });
       }
-
-      const results = await mapWithConcurrency(
-        toCheck,
-        4,
-        (sentence) => analyzeSentence(sentence)
-      );
-
-      const totalSimilarity = results.reduce(
-        (sum, r) => sum + r.similarity,
-        0
-      );
-      const overallScore = Math.round(
-        totalSimilarity / results.length
-      );
-      const plagiarizedCount = results.filter(
-        (r) => r.isPlagiarized
-      ).length;
-      const plagiarismPercentage = Math.round(
-        (plagiarizedCount / results.length) * 100
-      );
-
-      const aiAnalysis = detectAI(text);
-
-      const checkResult = {
-        overallScore,
-        plagiarismPercentage,
-        totalSentences: results.length,
-        plagiarizedSentences: plagiarizedCount,
-        aiScore: aiAnalysis.aiScore,
-        aiIndicators: aiAnalysis.indicators,
-        results,
-      };
-
-      res.json(checkResult);
-    } catch (error) {
-      console.error("Error in plagiarism check:", error);
-      if (error?.name === "ZodError") {
-        return res.status(400).json({
-          error:
-            error.errors?.[0]?.message ||
-            "Invalid request",
-        });
-      }
-      res.status(500).json({
-        error: "Failed to check plagiarism",
-      });
     }
-  });
+  );
 
   const handleUpload = (req, res, next) => {
     upload.single("file")(req, res, (err) => {
@@ -175,6 +220,7 @@ export function registerRoutes(app) {
 
   app.post(
     "/api/extract-text",
+    rateLimit,
     handleUpload,
     async (req, res) => {
       try {
