@@ -2,7 +2,12 @@ import { createServer } from "http";
 import multer from "multer";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
-import { checkTextSchema } from "../shared/schema.js";
+import {
+  checkTextSchema,
+  paraphraseSchema,
+  DEPTH_LIMITS,
+} from "../shared/schema.js";
+import { paraphrase } from "./paraphrase.js";
 import {
   calculateSimilarity,
   searchWeb,
@@ -10,50 +15,60 @@ import {
   nGramSimilarity,
   mapWithConcurrency,
   detectAI,
+  splitSentences,
+  sampleIndices,
+  detectAIByWindow,
 } from "./plagiarism.js";
 
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
 
-// Both API routes are unauthenticated and expensive
-// (in-memory parsing, many outbound fetches), so a
-// simple per-IP fixed window limits abuse.
+// The API routes are unauthenticated and expensive
+// (in-memory parsing, many outbound fetches),
+// so a simple per-IP fixed window limits abuse.
 const RATE_WINDOW_MS = 60 * 1000;
-const RATE_MAX_REQUESTS = 10;
-const hits = new Map();
 
-function rateLimit(req, res, next) {
-  const now = Date.now();
-  const key = req.ip || "unknown";
-  const entry = hits.get(key);
+function createRateLimit(maxRequests) {
+  const hits = new Map();
 
-  if (!entry || now > entry.resetAt) {
-    hits.set(key, {
-      count: 1,
-      resetAt: now + RATE_WINDOW_MS,
-    });
-    if (hits.size > 10000) {
-      for (const [k, v] of hits) {
-        if (now > v.resetAt) hits.delete(k);
+  return function rateLimit(req, res, next) {
+    const now = Date.now();
+    const key = req.ip || "unknown";
+    const entry = hits.get(key);
+
+    if (!entry || now > entry.resetAt) {
+      hits.set(key, {
+        count: 1,
+        resetAt: now + RATE_WINDOW_MS,
+      });
+      if (hits.size > 10000) {
+        for (const [k, v] of hits) {
+          if (now > v.resetAt) hits.delete(k);
+        }
       }
+      return next();
     }
+
+    entry.count += 1;
+    if (entry.count > maxRequests) {
+      const retryAfter = Math.ceil(
+        (entry.resetAt - now) / 1000
+      );
+      res.set("Retry-After", String(retryAfter));
+      return res.status(429).json({
+        error:
+          "Too many requests. Please wait a moment " +
+          "and try again.",
+      });
+    }
+
     return next();
-  }
-
-  entry.count += 1;
-  if (entry.count > RATE_MAX_REQUESTS) {
-    const retryAfter = Math.ceil(
-      (entry.resetAt - now) / 1000
-    );
-    res.set("Retry-After", String(retryAfter));
-    return res.status(429).json({
-      error:
-        "Too many requests. Please wait a moment " +
-        "and try again.",
-    });
-  }
-
-  return next();
+  };
 }
+
+const rateLimit = createRateLimit(10);
+// Paraphrasing is local and cheap, so it gets a wider
+// window than the scan endpoints.
+const paraphraseRateLimit = createRateLimit(60);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -131,20 +146,23 @@ export function registerRoutes(app) {
     rateLimit,
     async (req, res) => {
       try {
-        const { text } = checkTextSchema.parse(req.body);
+        const { text, depth } =
+          checkTextSchema.parse(req.body);
 
-        console.log(
-          "Starting plagiarism check for text length:",
-          text.length
+        const sentences = splitSentences(text);
+        const indices = sampleIndices(
+          sentences.length,
+          DEPTH_LIMITS[depth]
+        );
+        const toCheck = indices.map(
+          (i) => sentences[i]
         );
 
-        const sentences = text
-          .split(/[.!?]+/)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 20);
-
-        const limit = Math.min(sentences.length, 20);
-        const toCheck = sentences.slice(0, limit);
+        console.log(
+          `Plagiarism check: ${text.length} chars, ` +
+            `${toCheck.length}/${sentences.length} ` +
+            `sentences (depth ${depth})`
+        );
 
         if (toCheck.length === 0) {
           return res.status(400).json({
@@ -153,10 +171,24 @@ export function registerRoutes(app) {
           });
         }
 
+        const aiByWindow = detectAIByWindow(sentences);
+
         const results = await mapWithConcurrency(
           toCheck,
           4,
-          (sentence) => analyzeSentence(sentence)
+          async (sentence, i) => {
+            const analysis = await analyzeSentence(
+              sentence
+            );
+            const ai = aiByWindow[indices[i]];
+
+            return {
+              ...analysis,
+              aiScore: ai.aiScore,
+              aiIndicators: ai.indicators,
+              isAiGenerated: ai.aiScore >= 60,
+            };
+          }
         );
 
         const totalSimilarity = results.reduce(
@@ -172,16 +204,34 @@ export function registerRoutes(app) {
         const plagiarismPercentage = Math.round(
           (plagiarizedCount / results.length) * 100
         );
+        const aiCount = results.filter(
+          (r) => r.isAiGenerated
+        ).length;
+        const aiSentencePercentage = Math.round(
+          (aiCount / results.length) * 100
+        );
 
         const aiAnalysis = detectAI(text);
 
         const checkResult = {
+          coverage: {
+            documentSentences: sentences.length,
+            analyzedSentences: results.length,
+            coveragePercentage: Math.round(
+              (results.length / sentences.length) * 100
+            ),
+            sampled:
+              results.length < sentences.length,
+            depth,
+          },
           overallScore,
           plagiarismPercentage,
           totalSentences: results.length,
           plagiarizedSentences: plagiarizedCount,
           aiScore: aiAnalysis.aiScore,
           aiIndicators: aiAnalysis.indicators,
+          aiSentences: aiCount,
+          aiSentencePercentage,
           results,
         };
 
@@ -276,6 +326,31 @@ export function registerRoutes(app) {
         console.error("Error extracting text:", error);
         res.status(500).json({
           error: "Failed to extract text from file",
+        });
+      }
+    }
+  );
+
+  app.post(
+    "/api/paraphrase",
+    paraphraseRateLimit,
+    (req, res) => {
+      try {
+        const { text, reason, source } =
+          paraphraseSchema.parse(req.body);
+
+        res.json(paraphrase(text, reason, source));
+      } catch (error) {
+        console.error("Error paraphrasing:", error);
+        if (error?.name === "ZodError") {
+          return res.status(400).json({
+            error:
+              error.errors?.[0]?.message ||
+              "Invalid request",
+          });
+        }
+        res.status(500).json({
+          error: "Failed to generate suggestions",
         });
       }
     }

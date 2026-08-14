@@ -173,6 +173,93 @@ export function fetchPageContentCached(url) {
   return pending;
 }
 
+// Lines that carry no prose: table of contents
+// entries, bare URLs/DOIs, numbered references and
+// figure captions. They pollute the analysis and
+// waste one web search each.
+const NOISE_PATTERNS = [
+  /\.{4,}\s*\d+\s*$/,
+  /^(https?:\/\/|www\.|doi:)/i,
+  /^\[\d+\]/,
+  /^(tabla|figura|table|figure|gráfico)\s+\d+/i,
+];
+
+function isProse(sentence) {
+  if (sentence.length <= 20) return false;
+  if (sentence.split(/\s+/).length < 5) return false;
+
+  const letters = sentence.replace(
+    /[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ]/g,
+    ""
+  );
+  return letters.length / sentence.length >= 0.6;
+}
+
+function isNoiseLine(line) {
+  return NOISE_PATTERNS.some((re) => re.test(line));
+}
+
+// Splits a document into analyzable sentences,
+// dropping noise and repeated headers/footers so the
+// score reflects the actual body of the text.
+export function splitSentences(text) {
+  const seen = new Set();
+  const sentences = [];
+
+  for (const rawLine of text.split(/\n+/)) {
+    const line = rawLine.replace(/\s+/g, " ").trim();
+    if (!line || isNoiseLine(line)) continue;
+
+    for (const raw of line.split(/(?<=[.!?])\s+/)) {
+      const sentence = raw.trim();
+      if (!isProse(sentence)) continue;
+
+      const key = sentence.toLowerCase();
+      if (seen.has(key)) continue;
+
+      seen.add(key);
+      sentences.push(sentence);
+    }
+  }
+
+  return sentences;
+}
+
+// Picks `max` positions spread evenly over the whole
+// document instead of just the first ones, so a long
+// thesis is represented from start to end.
+export function sampleIndices(total, max) {
+  if (total <= max) {
+    return Array.from({ length: total }, (_, i) => i);
+  }
+
+  const step = total / max;
+  const indices = [];
+
+  for (let i = 0; i < max; i++) {
+    indices.push(Math.floor(i * step));
+  }
+
+  return indices;
+}
+
+// detectAI() needs several sentences to measure
+// burstiness, so each sentence is scored together
+// with its neighbours. This is what lets the UI point
+// at *which* part of the text looks AI-written.
+export function detectAIByWindow(sentences, radius = 2) {
+  return sentences.map((_, i) => {
+    const window = sentences
+      .slice(
+        Math.max(0, i - radius),
+        i + radius + 1
+      )
+      .join(" ");
+
+    return detectAI(window);
+  });
+}
+
 export async function mapWithConcurrency(items, limit, fn) {
   const results = new Array(items.length);
   let index = 0;

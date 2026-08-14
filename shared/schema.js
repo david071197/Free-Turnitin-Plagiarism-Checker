@@ -1,7 +1,25 @@
 import { z } from "zod";
 
+export const DEPTH_LIMITS = {
+  fast: 20,
+  normal: 60,
+  deep: 150,
+};
+
 export const checkTextSchema = z.object({
   text: z.string().min(100, "Text must be at least 100 characters long"),
+  depth: z
+    .enum(["fast", "normal", "deep"])
+    .default("normal"),
+});
+
+export const paraphraseSchema = z.object({
+  text: z
+    .string()
+    .min(20, "El fragmento es demasiado corto")
+    .max(1500, "El fragmento es demasiado largo"),
+  reason: z.enum(["plagio", "ia"]).default("plagio"),
+  source: z.string().url().optional(),
 });
 
 export const sentenceResultSchema = z.object({
@@ -14,14 +32,28 @@ export const sentenceResultSchema = z.object({
     })
   ),
   isPlagiarized: z.boolean(),
+  aiScore: z.number(),
+  aiIndicators: z.array(z.string()),
+  isAiGenerated: z.boolean(),
+});
+
+export const coverageSchema = z.object({
+  documentSentences: z.number(),
+  analyzedSentences: z.number(),
+  coveragePercentage: z.number(),
+  sampled: z.boolean(),
+  depth: z.string(),
 });
 
 export const checkResultSchema = z.object({
+  coverage: coverageSchema,
   overallScore: z.number(),
   plagiarismPercentage: z.number(),
   totalSentences: z.number(),
   plagiarizedSentences: z.number(),
   aiScore: z.number(),
   aiIndicators: z.array(z.string()),
+  aiSentences: z.number(),
+  aiSentencePercentage: z.number(),
   results: z.array(sentenceResultSchema),
 });
