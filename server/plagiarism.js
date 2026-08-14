@@ -16,12 +16,29 @@ export function calculateSimilarity(text1, text2) {
   return dotProduct / (magnitude1 * magnitude2);
 }
 
+// Global throttle for DuckDuckGo HTML requests. The rest of the pipeline
+// (page fetches, CrossRef) stays parallel, but hits to DDG's HTML endpoint
+// are spaced out to avoid rate limiting / captchas that would silently
+// produce false "no plagiarism" results.
+const DDG_MIN_INTERVAL_MS = 750;
+let ddgQueue = Promise.resolve();
+
+function throttleDuckDuckGo() {
+  const ready = ddgQueue;
+  ddgQueue = ready.then(
+    () => new Promise((resolve) => setTimeout(resolve, DDG_MIN_INTERVAL_MS))
+  );
+  return ready;
+}
+
 export async function searchWeb(query) {
   const urls = [];
 
   try {
     const searchQuery = encodeURIComponent(query.slice(0, 200));
     const ddgUrl = `https://html.duckduckgo.com/html/?q=${searchQuery}`;
+
+    await throttleDuckDuckGo();
 
     const response = await fetch(ddgUrl, {
       headers: {
@@ -30,9 +47,21 @@ export async function searchWeb(query) {
       },
     });
 
+    if (!response.ok) {
+      console.warn(
+        `DuckDuckGo search blocked or failed (status ${response.status}) for query: ${query.slice(0, 80)}`
+      );
+    }
+
     const html = await response.text();
 
     const resultMatches = html.match(/uddg=([^"&]+)/g) || [];
+
+    if (response.ok && resultMatches.length === 0) {
+      console.warn(
+        `DuckDuckGo returned no parseable results (possible rate limit/captcha) for query: ${query.slice(0, 80)}`
+      );
+    }
     const ddgUrls = resultMatches
       .map((match) => {
         const encoded = match.replace("uddg=", "");
@@ -115,6 +144,154 @@ export async function fetchPageContent(url) {
     console.error(`Error fetching ${url}:`, error);
     return "";
   }
+}
+
+const pageCache = new Map();
+
+export async function fetchPageContentCached(url) {
+  if (pageCache.has(url)) return pageCache.get(url);
+  const content = await fetchPageContent(url);
+  if (content) {
+    if (pageCache.size > 500) pageCache.clear();
+    pageCache.set(url, content);
+  }
+  return content;
+}
+
+export async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let index = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (index < items.length) {
+        const i = index++;
+        results[i] = await fn(items[i], i);
+      }
+    }
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+const AI_PHRASES = [
+  "in conclusion",
+  "furthermore",
+  "moreover",
+  "it is important to note",
+  "it is worth noting",
+  "delve into",
+  "in today's world",
+  "in the realm of",
+  "plays a crucial role",
+  "a testament to",
+  "navigating the",
+  "the landscape of",
+  "leverage",
+  "additionally",
+  "overall",
+  "ultimately",
+  "significantly",
+  "comprehensive",
+  "seamlessly",
+  "en conclusión",
+  "además",
+  "es importante destacar",
+  "cabe destacar",
+  "en resumen",
+  "por otro lado",
+  "sin embargo",
+  "juega un papel crucial",
+  "en el mundo actual",
+  "en el ámbito de",
+];
+
+export function detectAI(text) {
+  const sentences = text
+    .split(/[.!?]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 10);
+
+  if (sentences.length < 2) {
+    return { aiScore: 0, indicators: [] };
+  }
+
+  const lengths = sentences.map(
+    (s) => s.split(/\s+/).length
+  );
+  const mean =
+    lengths.reduce((a, b) => a + b, 0) / lengths.length;
+  const variance =
+    lengths.reduce(
+      (sum, l) => sum + (l - mean) ** 2,
+      0
+    ) / lengths.length;
+  const stdDev = Math.sqrt(variance);
+  const burstiness = mean > 0 ? stdDev / mean : 0;
+
+  const words = text
+    .toLowerCase()
+    .replace(/[^\wáéíóúüñ\s]/gi, "")
+    .split(/\s+/)
+    .filter(Boolean);
+  const uniqueRatio =
+    words.length > 0
+      ? new Set(words).size / words.length
+      : 0;
+
+  const lowerText = text.toLowerCase();
+  let phraseHits = 0;
+  const foundPhrases = [];
+  for (const phrase of AI_PHRASES) {
+    const matches = lowerText.split(phrase).length - 1;
+    if (matches > 0) {
+      phraseHits += matches;
+      foundPhrases.push(phrase);
+    }
+  }
+  const phraseDensity =
+    sentences.length > 0
+      ? phraseHits / sentences.length
+      : 0;
+
+  // Low burstiness (uniform sentence lengths),
+  // low vocabulary diversity, and high density of
+  // formulaic transitions correlate with AI text.
+  const burstinessScore = Math.max(
+    0,
+    Math.min(1, (0.55 - burstiness) / 0.55)
+  );
+  const diversityScore = Math.max(
+    0,
+    Math.min(1, (0.62 - uniqueRatio) / 0.35)
+  );
+  const phraseScore = Math.min(1, phraseDensity * 2.5);
+
+  const aiScore = Math.round(
+    (burstinessScore * 0.4 +
+      diversityScore * 0.25 +
+      phraseScore * 0.35) *
+      100
+  );
+
+  const indicators = [];
+  if (burstinessScore > 0.5) {
+    indicators.push(
+      "Longitud de oraciones muy uniforme"
+    );
+  }
+  if (diversityScore > 0.5) {
+    indicators.push("Baja diversidad de vocabulario");
+  }
+  if (phraseScore > 0.3) {
+    indicators.push(
+      `Frases típicas de IA: ${foundPhrases
+        .slice(0, 5)
+        .join(", ")}`
+    );
+  }
+
+  return { aiScore, indicators };
 }
 
 export function nGramSimilarity(text1, text2, n = 5) {

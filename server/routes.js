@@ -1,103 +1,239 @@
 import { createServer } from "http";
+import multer from "multer";
+import mammoth from "mammoth";
+import { PDFParse } from "pdf-parse";
 import { checkTextSchema } from "../shared/schema.js";
 import {
   calculateSimilarity,
   searchWeb,
-  fetchPageContent,
+  fetchPageContentCached,
   nGramSimilarity,
+  mapWithConcurrency,
+  detectAI,
 } from "./plagiarism.js";
+
+const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const name = file.originalname.toLowerCase();
+    const ok = ALLOWED_EXTENSIONS.some((ext) =>
+      name.endsWith(ext)
+    );
+    if (ok) {
+      cb(null, true);
+    } else {
+      cb(
+        new Error(
+          "Unsupported file type. Use PDF, DOCX or TXT."
+        )
+      );
+    }
+  },
+});
+
+async function analyzeSentence(sentence) {
+  const urls = await searchWeb(sentence);
+
+  let maxSimilarity = 0;
+  const matchedSources = [];
+
+  const contents = await mapWithConcurrency(
+    urls,
+    5,
+    (url) => fetchPageContentCached(url)
+  );
+
+  urls.forEach((url, i) => {
+    const content = contents[i];
+    if (!content || content.length <= 100) return;
+
+    const cosineSim = calculateSimilarity(
+      sentence,
+      content
+    );
+    const ngramSim = nGramSimilarity(
+      sentence,
+      content,
+      5
+    );
+    const similarity = Math.max(cosineSim, ngramSim);
+
+    if (similarity > maxSimilarity) {
+      maxSimilarity = similarity;
+    }
+    if (similarity > 0.15) {
+      matchedSources.push({
+        url,
+        similarity: Math.round(similarity * 100),
+      });
+    }
+  });
+
+  matchedSources.sort(
+    (a, b) => b.similarity - a.similarity
+  );
+
+  return {
+    sentence,
+    similarity: Math.round(maxSimilarity * 100),
+    sources: matchedSources,
+    isPlagiarized: maxSimilarity > 0.5,
+  };
+}
 
 export function registerRoutes(app) {
   app.post("/api/plagiarism-check", async (req, res) => {
     try {
       const { text } = checkTextSchema.parse(req.body);
 
-      console.log("Starting plagiarism check for text length:", text.length);
+      console.log(
+        "Starting plagiarism check for text length:",
+        text.length
+      );
 
       const sentences = text
         .split(/[.!?]+/)
         .map((s) => s.trim())
         .filter((s) => s.length > 20);
 
-      console.log("Split into", sentences.length, "sentences");
-
-      const results = [];
       const limit = Math.min(sentences.length, 20);
+      const toCheck = sentences.slice(0, limit);
 
-      for (let i = 0; i < limit; i++) {
-        const sentence = sentences[i];
-        console.log("Checking chunk:", sentence.substring(0, 50) + "...");
-
-        const urls = await searchWeb(sentence);
-        console.log(`Found ${urls.length} URLs to check`);
-
-        let maxSimilarity = 0;
-        const matchedSources = [];
-
-        for (const url of urls) {
-          const content = await fetchPageContent(url);
-          if (content && content.length > 100) {
-            const cosineSim = calculateSimilarity(sentence, content);
-            const ngramSim = nGramSimilarity(sentence, content, 5);
-
-            const similarity = Math.max(cosineSim, ngramSim);
-
-            console.log(
-              `URL ${url}: cosine=${cosineSim.toFixed(2)}, ngram=${ngramSim.toFixed(
-                2
-              )}, max=${similarity.toFixed(2)}`
-            );
-
-            if (similarity > maxSimilarity) {
-              maxSimilarity = similarity;
-            }
-
-            if (similarity > 0.15) {
-              matchedSources.push({
-                url,
-                similarity: Math.round(similarity * 100),
-              });
-            }
-          }
-        }
-
-        matchedSources.sort((a, b) => b.similarity - a.similarity);
-
-        results.push({
-          sentence,
-          similarity: Math.round(maxSimilarity * 100),
-          sources: matchedSources,
-          isPlagiarized: maxSimilarity > 0.5,
+      if (toCheck.length === 0) {
+        return res.status(400).json({
+          error:
+            "No analyzable sentences found. Please provide longer sentences.",
         });
-
-        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
 
-      const totalSimilarity = results.reduce((sum, r) => sum + r.similarity, 0);
-      const overallScore = Math.round(totalSimilarity / results.length);
-      const plagiarizedCount = results.filter((r) => r.isPlagiarized).length;
+      const results = await mapWithConcurrency(
+        toCheck,
+        4,
+        (sentence) => analyzeSentence(sentence)
+      );
+
+      const totalSimilarity = results.reduce(
+        (sum, r) => sum + r.similarity,
+        0
+      );
+      const overallScore = Math.round(
+        totalSimilarity / results.length
+      );
+      const plagiarizedCount = results.filter(
+        (r) => r.isPlagiarized
+      ).length;
       const plagiarismPercentage = Math.round(
         (plagiarizedCount / results.length) * 100
       );
 
-      console.log("Plagiarism check complete. Overall score:", overallScore);
+      const aiAnalysis = detectAI(text);
 
       const checkResult = {
         overallScore,
         plagiarismPercentage,
         totalSentences: results.length,
         plagiarizedSentences: plagiarizedCount,
+        aiScore: aiAnalysis.aiScore,
+        aiIndicators: aiAnalysis.indicators,
         results,
       };
 
       res.json(checkResult);
     } catch (error) {
       console.error("Error in plagiarism check:", error);
+      if (error?.name === "ZodError") {
+        return res.status(400).json({
+          error:
+            error.errors?.[0]?.message ||
+            "Invalid request",
+        });
+      }
       res.status(500).json({
-        error: error instanceof Error ? error.message : "An unknown error occurred",
+        error: "Failed to check plagiarism",
       });
     }
   });
+
+  const handleUpload = (req, res, next) => {
+    upload.single("file")(req, res, (err) => {
+      if (err) {
+        const message =
+          err.code === "LIMIT_FILE_SIZE"
+            ? "File too large. Maximum size is 15 MB."
+            : err.message ||
+              "File upload failed";
+        return res
+          .status(400)
+          .json({ error: message });
+      }
+      next();
+    });
+  };
+
+  app.post(
+    "/api/extract-text",
+    handleUpload,
+    async (req, res) => {
+      try {
+        if (!req.file) {
+          return res
+            .status(400)
+            .json({ error: "No file uploaded" });
+        }
+
+        const { originalname, buffer, mimetype } =
+          req.file;
+        const name = originalname.toLowerCase();
+        let text = "";
+
+        if (
+          name.endsWith(".pdf") ||
+          mimetype === "application/pdf"
+        ) {
+          const parser = new PDFParse({
+            data: new Uint8Array(buffer),
+          });
+          try {
+            const result = await parser.getText();
+            text = result.text || "";
+          } finally {
+            await parser.destroy();
+          }
+        } else if (name.endsWith(".docx")) {
+          const result = await mammoth.extractRawText({
+            buffer,
+          });
+          text = result.value || "";
+        } else if (name.endsWith(".txt")) {
+          text = buffer.toString("utf-8");
+        } else {
+          return res.status(400).json({
+            error:
+              "Unsupported file type. Use PDF, DOCX or TXT.",
+          });
+        }
+
+        text = text.replace(/\s+\n/g, "\n").trim();
+
+        if (text.length < 100) {
+          return res.status(400).json({
+            error:
+              "Could not extract enough text from the file (minimum 100 characters).",
+          });
+        }
+
+        res.json({ text, filename: originalname });
+      } catch (error) {
+        console.error("Error extracting text:", error);
+        res.status(500).json({
+          error: "Failed to extract text from file",
+        });
+      }
+    }
+  );
 
   const httpServer = createServer(app);
   return httpServer;
