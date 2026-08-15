@@ -13,6 +13,12 @@ export const checkTextSchema = z.object({
     .default("normal"),
 });
 
+export const scanTextSchema = z.object({
+  text: z
+    .string()
+    .min(100, "Text must be at least 100 characters long"),
+});
+
 export const paraphraseSchema = z.object({
   text: z
     .string()

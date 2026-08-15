@@ -4,17 +4,26 @@ import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import {
   checkTextSchema,
+  scanTextSchema,
   paraphraseSchema,
   DEPTH_LIMITS,
 } from "../shared/schema.js";
 import { paraphrase } from "./paraphrase.js";
+import { buildReport } from "./report.js";
+import {
+  createJob,
+  cancelJob,
+  getJobSnapshot,
+  runningJobCount,
+  MAX_SENTENCES,
+  MAX_RUNNING_JOBS,
+} from "./scanJobs.js";
 import {
   calculateSimilarity,
   searchWeb,
   fetchPageContentCached,
   nGramSimilarity,
   mapWithConcurrency,
-  detectAI,
   splitSentences,
   sampleIndices,
   detectAIByWindow,
@@ -66,6 +75,9 @@ function createRateLimit(maxRequests) {
 }
 
 const rateLimit = createRateLimit(10);
+// Polling a running scan is cheap, so it must not eat
+// the scan quota.
+const pollRateLimit = createRateLimit(600);
 // Paraphrasing is local and cheap, so it gets a wider
 // window than the scan endpoints.
 const paraphraseRateLimit = createRateLimit(60);
@@ -191,51 +203,14 @@ export function registerRoutes(app) {
           }
         );
 
-        const totalSimilarity = results.reduce(
-          (sum, r) => sum + r.similarity,
-          0
-        );
-        const overallScore = Math.round(
-          totalSimilarity / results.length
-        );
-        const plagiarizedCount = results.filter(
-          (r) => r.isPlagiarized
-        ).length;
-        const plagiarismPercentage = Math.round(
-          (plagiarizedCount / results.length) * 100
-        );
-        const aiCount = results.filter(
-          (r) => r.isAiGenerated
-        ).length;
-        const aiSentencePercentage = Math.round(
-          (aiCount / results.length) * 100
-        );
-
-        const aiAnalysis = detectAI(text);
-
-        const checkResult = {
-          coverage: {
+        res.json(
+          buildReport({
+            text,
             documentSentences: sentences.length,
-            analyzedSentences: results.length,
-            coveragePercentage: Math.round(
-              (results.length / sentences.length) * 100
-            ),
-            sampled:
-              results.length < sentences.length,
+            results,
             depth,
-          },
-          overallScore,
-          plagiarismPercentage,
-          totalSentences: results.length,
-          plagiarizedSentences: plagiarizedCount,
-          aiScore: aiAnalysis.aiScore,
-          aiIndicators: aiAnalysis.indicators,
-          aiSentences: aiCount,
-          aiSentencePercentage,
-          results,
-        };
-
-        res.json(checkResult);
+          })
+        );
       } catch (error) {
         console.error("Error in plagiarism check:", error);
         if (error?.name === "ZodError") {
@@ -249,6 +224,94 @@ export function registerRoutes(app) {
           error: "Failed to check plagiarism",
         });
       }
+    }
+  );
+
+  app.post(
+    "/api/plagiarism-scan",
+    rateLimit,
+    (req, res) => {
+      try {
+        const { text } = scanTextSchema.parse(req.body);
+        const sentences = splitSentences(text);
+
+        if (sentences.length === 0) {
+          return res.status(400).json({
+            error:
+              "No analyzable sentences found. Please provide longer sentences.",
+          });
+        }
+
+        if (sentences.length > MAX_SENTENCES) {
+          return res.status(400).json({
+            error:
+              `Document too large: ${sentences.length} ` +
+              `sentences (max ${MAX_SENTENCES}). ` +
+              "Split it in parts.",
+          });
+        }
+
+        if (runningJobCount() >= MAX_RUNNING_JOBS) {
+          return res.status(429).json({
+            error:
+              "Another full scan is already running. " +
+              "Please wait until it finishes.",
+          });
+        }
+
+        const job = createJob(
+          text,
+          sentences,
+          analyzeSentence
+        );
+        console.log(
+          `Full scan ${job.id}: ${job.total} sentences`
+        );
+
+        res.status(202).json({
+          jobId: job.id,
+          total: job.total,
+        });
+      } catch (error) {
+        console.error("Error starting scan:", error);
+        if (error?.name === "ZodError") {
+          return res.status(400).json({
+            error:
+              error.errors?.[0]?.message ||
+              "Invalid request",
+          });
+        }
+        res.status(500).json({
+          error: "Failed to start scan",
+        });
+      }
+    }
+  );
+
+  app.get(
+    "/api/plagiarism-scan/:id",
+    pollRateLimit,
+    (req, res) => {
+      const snapshot = getJobSnapshot(req.params.id);
+      if (!snapshot) {
+        return res.status(404).json({
+          error: "Scan not found or expired",
+        });
+      }
+      res.json(snapshot);
+    }
+  );
+
+  app.delete(
+    "/api/plagiarism-scan/:id",
+    pollRateLimit,
+    (req, res) => {
+      if (!cancelJob(req.params.id)) {
+        return res.status(404).json({
+          error: "Scan not found or expired",
+        });
+      }
+      res.json({ cancelled: true });
     }
   );
 

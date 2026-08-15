@@ -1,4 +1,8 @@
-import { useState, useRef } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,7 +35,22 @@ const DEPTH_OPTIONS = [
     label: "Profundo",
     hint: "hasta 150 oraciones",
   },
+  {
+    value: "full",
+    label: "Documento completo",
+    hint: "todas las oraciones, en segundo plano",
+  },
 ];
+
+const POLL_MS = 3000;
+
+const formatEta = (seconds) => {
+  if (seconds == null) return "calculando...";
+  if (seconds < 60) return `${seconds} s`;
+
+  const minutes = Math.round(seconds / 60);
+  return `${minutes} min`;
+};
 
 const FILTERS = [
   { value: "all", label: "Todo" },
@@ -57,7 +76,9 @@ const Index = () => {
   const [result, setResult] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [fileName, setFileName] = useState("");
+  const [scan, setScan] = useState(null);
   const fileInputRef = useRef(null);
+  const pollRef = useRef(null);
   const {
     toast
   } = useToast();
@@ -71,6 +92,108 @@ const Index = () => {
         "Vuelve a analizar para ver el nuevo " +
         "porcentaje.",
     });
+  };
+
+  useEffect(
+    () => () => clearTimeout(pollRef.current),
+    []
+  );
+
+  const pollScan = async (jobId) => {
+    try {
+      const response = await fetch(
+        `/api/plagiarism-scan/${jobId}`
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data.error || "Scan not found"
+        );
+      }
+
+      setScan(data);
+      if (data.report.totalSentences > 0) {
+        setResult(data.report);
+      }
+
+      if (data.status === "running") {
+        pollRef.current = setTimeout(
+          () => pollScan(jobId),
+          POLL_MS
+        );
+        return;
+      }
+
+      setIsChecking(false);
+      toast({
+        title:
+          data.status === "completed"
+            ? "Escaneo completo"
+            : "Escaneo detenido",
+        description:
+          `Analizadas ${data.done} de ${data.total} ` +
+          "oraciones.",
+      });
+    } catch (error) {
+      setIsChecking(false);
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const startFullScan = async () => {
+    setIsChecking(true);
+    setResult(null);
+    setScan(null);
+    try {
+      const response = await fetch(
+        "/api/plagiarism-scan",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ text }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data.error || "No se pudo iniciar el escaneo"
+        );
+      }
+
+      setFilter("all");
+      setScan({
+        jobId: data.jobId,
+        status: "running",
+        done: 0,
+        total: data.total,
+        etaSeconds: null,
+      });
+      pollScan(data.jobId);
+    } catch (error) {
+      setIsChecking(false);
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const cancelScan = async () => {
+    clearTimeout(pollRef.current);
+    if (scan?.jobId) {
+      await fetch(
+        `/api/plagiarism-scan/${scan.jobId}`,
+        { method: "DELETE" }
+      ).catch(() => {});
+      pollScan(scan.jobId);
+    }
   };
 
   const handleCheck = async () => {
@@ -95,8 +218,14 @@ const Index = () => {
       return;
     }
 
+    if (depth === "full") {
+      startFullScan();
+      return;
+    }
+
     setIsChecking(true);
     setResult(null);
+    setScan(null);
     try {
       const response = await fetch('/api/plagiarism-check', {
         method: 'POST',
@@ -275,14 +404,19 @@ const Index = () => {
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Las oraciones se reparten por todo el
-                  documento, no solo al inicio (
-                  {
-                    DEPTH_OPTIONS.find(
-                      (o) => o.value === depth
-                    ).hint
-                  }
-                  ).
+                  {depth === "full"
+                    ? "Analiza el 100% del documento en " +
+                      "segundo plano con progreso; tarda " +
+                      "varios minutos según su tamaño."
+                    : "Las oraciones se reparten por " +
+                      "todo el documento, no solo al " +
+                      "inicio ("}
+                  {depth !== "full" &&
+                    `${
+                      DEPTH_OPTIONS.find(
+                        (o) => o.value === depth
+                      ).hint
+                    }).`}
                 </p>
               </div>
               <Textarea data-testid="input-text" placeholder="Paste your text here (minimum 100 characters)..." value={text} onChange={e => setText(e.target.value)} className="min-h-[200px] text-base" />
@@ -296,12 +430,53 @@ const Index = () => {
                 </Button>
               </div>
 
-              {isChecking && <Alert data-testid="alert-checking">
+              {isChecking && !scan && <Alert data-testid="alert-checking">
                   <AlertCircle className="h-4 w-4" />
                   <AlertDescription>
                     Analyzing your text against web sources in parallel, this usually takes a few seconds...
                   </AlertDescription>
                 </Alert>}
+
+              {scan && (
+                <div
+                  className="space-y-2"
+                  data-testid="scan-progress"
+                >
+                  <Progress
+                    value={
+                      (scan.done / scan.total) * 100
+                    }
+                    className="h-2"
+                  />
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className="text-sm text-muted-foreground">
+                      Analizadas {scan.done} de{" "}
+                      {scan.total} oraciones
+                      {scan.status === "running" && (
+                        <>
+                          {" · quedan ~"}
+                          {formatEta(scan.etaSeconds)}
+                        </>
+                      )}
+                    </p>
+                    {scan.status === "running" && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        data-testid="button-cancel-scan"
+                        onClick={cancelScan}
+                      >
+                        Detener y ver lo analizado
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Puedes dejar esta pestaña abierta: los
+                    resultados se actualizan solos.
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -369,7 +544,8 @@ const Index = () => {
                         {result.coverage.sampled
                           ? "Muestreo repartido de " +
                             "principio a fin; usa " +
-                            "Profundo para más cobertura."
+                            "Documento completo para " +
+                            "analizarlo todo."
                           : "Documento completo."}
                       </AlertDescription>
                     </Alert>
