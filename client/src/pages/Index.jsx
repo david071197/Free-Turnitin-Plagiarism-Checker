@@ -14,10 +14,12 @@ import {
   AlertCircle,
   Upload,
   Bot,
+  Download,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { checkTextSchema } from "../../../shared/schema";
 import ParaphraseSuggestions from "@/components/ParaphraseSuggestions";
+import { downloadReportPdf } from "@/lib/reportPdf";
 
 const DEPTH_OPTIONS = [
   {
@@ -481,6 +483,19 @@ const Index = () => {
           </Card>
 
           {result && <div className="mt-8 space-y-6">
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  data-testid="button-download-pdf"
+                  onClick={() =>
+                    downloadReportPdf(result)
+                  }
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  Descargar informe (PDF)
+                </Button>
+              </div>
               <Card className="shadow-xl border-2 border-red-200 dark:border-red-900" data-testid="card-report">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
